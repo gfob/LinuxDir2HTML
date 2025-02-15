@@ -809,7 +809,7 @@
 			var numberOfFiles = [NUM FILES];
 
 			var linkFiles = [LINK FILES];
-			var linkProtocol = "[LINK PROTOCOL]";
+			var linkProtocol = location.origin;
 			var linkRoot = "[LINK ROOT]";
 			var sourceRoot = "[SOURCE ROOT]";
 			var sourceParent = sourceRoot.substring( 0, sourceRoot.lastIndexOf("/") +1 );
@@ -1260,7 +1260,7 @@
 				currentDir = getDirNameAndPath(FolderID);
 				currentDirID = Number(FolderID);
 
-				location.hash = '#' + currentDir;
+				// location.hash = '#' + currentDir;
 
 				$("#list_header").html( breadcrumbs );
 
