@@ -8,6 +8,7 @@
 # v1.4.0 (Aug. 2020) - Safety, logging, and --startswith and --child options.
 # v1.5.0 (Oct. 2022) - Write errors fix (thanks Jarvis-3-0). Handle " in filenames.
 # v1.6.0 (Dec. 2022) - Introduce the --symlink and --silent options.
+# v1.7.0 (Feb. 2025) - Add --zero-time and --zero-size and --replace-path options.
 
 # Note that certain characters in file names will cause issues.
 # Especially '\n', and to much lesser extent '*'
@@ -21,7 +22,7 @@ import re
 
 # Mostly variables to feed into template.html
 appName     = "LinuxDir2HTML"
-app_ver     = "1.6.0"
+app_ver     = "1.7.0"
 gen_date    = datetime.datetime.now().strftime("%m/%d/%Y")
 gen_time    = datetime.datetime.now().strftime("%H:%M")
 app_link    = "https://github.com/homeisfar/LinuxDir2HTML"
@@ -33,6 +34,9 @@ file_links      = "false"   # This is a string b/c it's used in the template.
 link_protocol   = "file://"
 include_hidden  = False
 follow_symlink  = False
+zero_time       = False  # New flag for zeroing modification times
+zero_size       = False  # New flag for zeroing file sizes
+replace_path    = None  # New variable for path replacement
 dir_results     = []
 childList_names = [] # names supplied from --child options
 startsList_names = [] # dir's generated from --startsfrom options
@@ -46,12 +50,15 @@ parser.add_argument('--startswith', action='append', help='Start of name(s) of c
 parser.add_argument('--hidden', help='Include hidden files (leading with .)', action="store_true")
 parser.add_argument('--links', help='Create links to files in HTML output', action="store_true")
 parser.add_argument('--symlink', help='Follow symlinks. WARN: This can cause infinite loops.', action="store_true")
+parser.add_argument('--zero-time', help='Set all modification times to 0', action="store_true")
+parser.add_argument('--zero-size', help='Set all file and directory sizes to 0', action="store_true")
+parser.add_argument('--replace-path', help='Replace the indexed directory path with this path', type=str)
 parser.add_argument('-v', '--verbose', help='increase output verbosity. -v or -vv for more.', action="count")
 parser.add_argument('--silent', help='Suppress terminal output except on error.', action="store_true")
 parser.add_argument('--version', help='Print version and exit', action="version", version=app_ver)
 
 def main():
-    global include_hidden, file_links, childList_names, startsList_names, follow_symlink
+    global include_hidden, file_links, childList_names, startsList_names, follow_symlink, zero_time, zero_size, replace_path
     args = parser.parse_args()
     
     ## Initialize logging facilities
@@ -65,7 +72,7 @@ def main():
         log_level = logging.ERROR
     logging.basicConfig(format='%(asctime)s %(message)s', datefmt='%H:%M:%S', level=log_level)
     log_name = logging.getLevelName(logging.getLogger().getEffectiveLevel())
-    logging.info( f'Logging Level {log_name}')
+    logging.info(f'Logging Level {log_name}')
     
     # Handle user input flags and options
     pathToIndex = args.pathToIndex
@@ -77,6 +84,15 @@ def main():
     if args.symlink:
         follow_symlink = True
         logging.warning(f"Please be aware following symlinks can cause circular infinite loops.")
+    if args.zero_time:
+        zero_time = True
+        logging.info("Setting all modification times to 0")
+    if args.zero_size:
+        zero_size = True
+        logging.info("Setting all file and directory sizes to 0")
+    if args.replace_path is not None:
+        replace_path = os.path.normpath(args.replace_path)
+        logging.info(f"Will replace root path with: {replace_path}")
     if not os.path.exists(pathToIndex):
         logging.error(f"Directory specified to index [{pathToIndex}] doesn't exist. Aborting.")
         exit(1)
@@ -111,18 +127,25 @@ def main():
         total_numFiles, total_numDirs, grand_total_size, file_links
         )
     return
-        
+
+def replace_root_path(path, root_path, new_path):
+    """Replace the root path with a new path while maintaining the directory structure"""
+    rel_path = os.path.relpath(path, root_path)
+    if rel_path == '.':
+        return new_path
+    return os.path.join(new_path, rel_path)
+
 def generateDirArray(root_dir): # root i.e. user-provided root path, not "/"
     global dir_data, total_numFiles, total_numDirs, grand_total_size, \
             dir_results, childList_names, startsList_names
     id = 0
     dirs_dictionary = {}
-    
+
     # We enumerate every unique directory, ignoring symlinks by default.
     first_iteration = True
     for current_dir, dirs, files in os.walk(root_dir, True, None, follow_symlink):
-        logging.debug( f'Walking Dir [{current_dir}]')
-        
+        logging.debug(f'Walking Dir [{current_dir}]')
+
         # If --child or --startswith are used, only add the requested
         # directories. This will only be performed on the root_dir
         if first_iteration:
@@ -146,28 +169,39 @@ def generateDirArray(root_dir): # root i.e. user-provided root path, not "/"
         # Id is unused but could be useful for future features.
         dirs_dictionary[current_dir] = [id, [], 0, '']
         arr = dirs_dictionary[current_dir][1]
-        dir_mod_time = int(
+        
+        # Handle directory path replacement and modification time
+        displayed_path = current_dir
+        if replace_path is not None:
+            displayed_path = replace_root_path(current_dir, root_dir, replace_path)
+        
+        dir_mod_time = 0 if zero_time else int(
                 datetime.datetime.fromtimestamp(
                         os.path.getmtime(current_dir)).timestamp())
-        arr.append(f'{current_dir}*0*{dir_mod_time}')
+        arr.append(f'{displayed_path}*0*{dir_mod_time}')
 
         ##### Enumerate FILES #####
         total_size = 0
         for file in files:
             full_file_path = os.path.join(current_dir, file)
             if os.path.isfile(full_file_path):
-                total_numFiles   += 1
-                file_size         = os.path.getsize(full_file_path)
-                total_size       += file_size
-                grand_total_size += file_size
+                total_numFiles += 1
+                # Handle file size
+                file_size = 0 if zero_size else os.path.getsize(full_file_path)
+                if not zero_size:
+                    total_size += file_size
+                    grand_total_size += file_size
+                # Handle modification time
                 try:  # Avoid possible invalid mtimes
-                    mod_time = int(datetime.datetime.fromtimestamp
-                        (os.path.getmtime(full_file_path)).timestamp())
+                    mod_time = 0 if zero_time else int(datetime.datetime.fromtimestamp(
+                        os.path.getmtime(full_file_path)).timestamp())
                 except:
                     logging.warning(f'----fromtimestamp timestamp invalid [{full_file_path}]')
                     mod_time = 1
                 arr.append(f'{file}*{file_size}*{mod_time}')
-        dirs_dictionary[current_dir][2] = total_size
+        
+        # Handle directory size
+        dirs_dictionary[current_dir][2] = 0 if zero_size else total_size
 
         ##### Enumerate DIRS #####
         dir_links = ''
@@ -193,7 +227,7 @@ def generateDirArray(root_dir): # root i.e. user-provided root path, not "/"
             dir_data += f'{dirs_dictionary[entry][2]},"{dirs_dictionary[entry][3]}"])\n'
             dir_results.append(dir_data)
         except:
-            logging.error( f'----loading from dirs_dictionary error. Could not add [{entry}]')
+            logging.error(f'----loading from dirs_dictionary error. Could not add [{entry}]')
     return
 
 # This function will execute only on the first iteration of the directory walk.
